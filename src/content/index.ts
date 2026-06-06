@@ -1,17 +1,23 @@
-import { COLLECT_RESPONSES, DOWNLOAD_MARKDOWN, type Ai2mdMessage } from "../shared/messages";
 import { domToMarkdown } from "../shared/markdown";
 import { getAdapterForUrl, type ResponseNode } from "./adapters";
 
+const DOWNLOAD_MARKDOWN = "AI2MD_DOWNLOAD_MARKDOWN";
+const COLLECT_RESPONSES = "AI2MD_COLLECT_RESPONSES";
 const BUTTON_ATTRIBUTE = "data-ai2md-export-button";
 const TOOLBAR_ATTRIBUTE = "data-ai2md-toolbar";
 const STYLE_ID = "ai2md-style";
 
+interface ContentMessage {
+  type: string;
+}
+
 let scheduled = false;
+let observer: MutationObserver | null = null;
 
 injectStyle();
 scheduleEnhancement();
 
-const observer = new MutationObserver(() => {
+observer = new MutationObserver(() => {
   scheduleEnhancement();
 });
 
@@ -20,29 +26,7 @@ observer.observe(document.documentElement, {
   subtree: true
 });
 
-chrome.runtime.onMessage.addListener((message: Ai2mdMessage, _sender, sendResponse) => {
-  if (message.type !== COLLECT_RESPONSES) {
-    return;
-  }
-
-  const adapter = getAdapterForUrl(window.location.href);
-
-  if (!adapter) {
-    sendResponse({ ok: false, error: "Unsupported site" });
-    return;
-  }
-
-  const responses = adapter
-    .findResponses()
-    .map((response) => domToMarkdown(response.content).trim())
-    .filter(Boolean);
-
-  sendResponse({
-    ok: true,
-    site: adapter.site,
-    responses
-  });
-});
+registerRuntimeListener();
 
 function scheduleEnhancement(): void {
   if (scheduled) {
@@ -72,7 +56,7 @@ function enhanceResponses(): void {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = "MD";
-    button.title = "Markdownとして保存";
+    button.title = "Save as Markdown";
     button.setAttribute(BUTTON_ATTRIBUTE, "true");
     button.addEventListener("click", (event) => {
       event.preventDefault();
@@ -113,25 +97,100 @@ function downloadSingleResponse(
     return;
   }
 
-  chrome.runtime.sendMessage(
-    {
-      type: DOWNLOAD_MARKDOWN,
-      payload: {
-        site,
-        markdown,
-        scope: "single",
-        index
+  try {
+    if (!isRuntimeAvailable()) {
+      deactivateExtensionControls();
+      flashButton(button, "Reload");
+      return;
+    }
+
+    chrome.runtime.sendMessage(
+      {
+        type: DOWNLOAD_MARKDOWN,
+        payload: {
+          site,
+          markdown,
+          scope: "single",
+          index
+        }
+      },
+      (result?: { ok?: boolean; error?: string }) => {
+        const runtimeError = getRuntimeLastError();
+
+        if (runtimeError || !result?.ok) {
+          flashButton(button, "Error");
+          return;
+        }
+
+        flashButton(button, "Saved");
       }
-    },
-    (result?: { ok?: boolean; error?: string }) => {
-      if (chrome.runtime.lastError || !result?.ok) {
-        flashButton(button, "Error");
+    );
+  } catch {
+    deactivateExtensionControls();
+    flashButton(button, "Reload");
+  }
+}
+
+function registerRuntimeListener(): void {
+  try {
+    if (!isRuntimeAvailable()) {
+      deactivateExtensionControls();
+      return;
+    }
+
+    chrome.runtime.onMessage.addListener((message: ContentMessage, _sender, sendResponse) => {
+      if (message.type !== COLLECT_RESPONSES) {
         return;
       }
 
-      flashButton(button, "Saved");
-    }
-  );
+      const adapter = getAdapterForUrl(window.location.href);
+
+      if (!adapter) {
+        sendResponse({ ok: false, error: "Unsupported site" });
+        return;
+      }
+
+      const responses = adapter
+        .findResponses()
+        .map((response) => domToMarkdown(response.content).trim())
+        .filter(Boolean);
+
+      sendResponse({
+        ok: true,
+        site: adapter.site,
+        responses
+      });
+    });
+  } catch {
+    deactivateExtensionControls();
+  }
+}
+
+function isRuntimeAvailable(): boolean {
+  try {
+    return Boolean(chrome.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+function getRuntimeLastError(): string | null {
+  try {
+    return chrome.runtime.lastError?.message ?? null;
+  } catch {
+    deactivateExtensionControls();
+    return "Extension context invalidated";
+  }
+}
+
+function deactivateExtensionControls(): void {
+  observer?.disconnect();
+
+  document.querySelectorAll<HTMLButtonElement>(`[${BUTTON_ATTRIBUTE}]`).forEach((button) => {
+    button.disabled = true;
+    button.textContent = "Reload";
+    button.title = "Reload this tab after reloading the extension";
+  });
 }
 
 function flashButton(button: HTMLButtonElement, label: string): void {
