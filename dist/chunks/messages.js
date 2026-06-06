@@ -1,0 +1,1 @@
+var e=`AI2MD_DOWNLOAD_MARKDOWN`,t=`AI2MD_COLLECT_RESPONSES`;export{e as n,t};
